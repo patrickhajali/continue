@@ -29,7 +29,8 @@ from ..models.filesystem_edit import FileEditWithFullContents
 from ..models.main import ContinueBaseModel
 from ..plugins.context_providers.file import FileContextProvider
 from ..plugins.context_providers.highlighted_code import HighlightedCodeContextProvider
-from ..plugins.policies.default import DefaultPolicy
+from ..plugins.policies.commit import CommitPolicy
+from ..plugins.policies.default import DefaultPolicy, MultiStepPolicy # PAH
 from ..plugins.steps.on_traceback import DefaultOnTracebackStep
 from ..server.ide_protocol import AbstractIdeProtocolServer
 from ..server.meilisearch_server import get_meilisearch_url, stop_meilisearch
@@ -81,7 +82,7 @@ def get_error_title(e: Exception) -> str:
 class Autopilot(ContinueBaseModel):
     ide: AbstractIdeProtocolServer
 
-    policy: Policy = DefaultPolicy()
+    policy: Policy = MultiStepPolicy() # PAH
     history: History = History.from_empty()
     context: Context = Context()
     full_state: Optional[FullState] = None
@@ -350,6 +351,10 @@ class Autopilot(ContinueBaseModel):
             )
         await self.update_subscribers()
 
+    # PAH
+    async def delete_all_context(self):
+        self.context_manager.clear_context()
+    
     async def toggle_adding_highlighted_code(self):
         if "code" not in self.context_manager.context_providers:
             return

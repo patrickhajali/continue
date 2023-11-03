@@ -85,7 +85,7 @@ class FasterEditHighlightedCodeStep(Step):
         return "Editing highlighted code"
 
     async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
-        range_in_files = await sdk.get_code_context(only_editing=True)
+        range_in_files = sdk.get_code_context(only_editing=True)
         if len(range_in_files) == 0:
             # Get the full contents of all visible files
             files = await sdk.ide.getVisibleFiles()
@@ -295,7 +295,7 @@ class EditHighlightedCodeStep(Step):
         description="The natural language request describing how to edit the code",
     )
     model: Optional[LLM] = None
-    hide = True
+    hide = True 
     description: str = "Change the contents of the currently highlighted code or open file. You should call this function if the user asks seems to be asking for a code change."
 
     summary_prompt: Optional[str] = None
@@ -304,6 +304,8 @@ class EditHighlightedCodeStep(Step):
         return "Editing code"
 
     async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
+
+        # rifs for all active contexts
         range_in_files = sdk.get_code_context(only_editing=True)
 
         # If nothing highlighted, insert at the cursor if possible
@@ -327,6 +329,7 @@ class EditHighlightedCodeStep(Step):
         if all([rif.range.start == rif.range.end for rif in range_in_files]):
             range_in_files = [range_in_files[-1]]
 
+        # Mapping elements of range_in_files from RangeInFileWithContents -> RangeInFile
         range_in_files = list(
             map(
                 lambda x: RangeInFile(filepath=x.filepath, range=x.range),
@@ -407,3 +410,4 @@ class EmptyStep(Step):
 
     async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
         pass
+

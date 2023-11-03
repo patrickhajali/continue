@@ -409,7 +409,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
                         ):
                             rewritten_lines = i + 1
                             break
-                lines_to_display = contents_lines[rewritten_lines:]
+                lines_to_display = contents_lines[rewritten_lines:] # holds the unchanged or new lines 
 
             new_file_contents = (
                 "\n".join(full_prefix_lines)
@@ -596,7 +596,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
             params.update(
                 {"max_tokens": min(max_tokens, model_to_use.context_length // 2)}
             )
-            generator = model_to_use.stream_complete(**params)
+            generator = model_to_use.stream_complete(**params) # Generating model output
 
         else:
 
@@ -683,7 +683,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
                 # Debounce the diff updates, last in only out for each period
                 if last_task_time is None or time.time() - last_task_time > 0.15:
                     last_task_time = time.time()
-                    await sendDiffUpdate(
+                    await sendDiffUpdate( # Streaming each line to IDE (after all lines are accumulated)
                         lines
                         + [
                             common_whitespace
@@ -720,7 +720,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
 
     async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
         await sdk.update_ui()
-
+        # Construct rif with contents from rif
         rif_with_contents = []
         for range_in_file in map(
             lambda x: RangeInFile(
@@ -734,14 +734,14 @@ Please output the code to be inserted at the cursor in order to fulfill the user
             rif_with_contents.append(
                 RangeInFileWithContents.from_range_in_file(range_in_file, file_contents)
             )
-
+        # rif_dict not used 
         rif_dict = {}
         for rif in rif_with_contents:
             rif_dict[rif.filepath] = rif.contents
 
         for rif in rif_with_contents:
-            await sdk.ide.setSuggestionsLocked(rif.filepath, True)
-            await self.stream_rif(rif, sdk)
+            await sdk.ide.setSuggestionsLocked(rif.filepath, True) # Lock suggestions in the file so they don't ruin the offset before others are inserted
+            await self.stream_rif(rif, sdk) 
             await sdk.ide.setSuggestionsLocked(rif.filepath, False)
 
         changes = "\n".join(
