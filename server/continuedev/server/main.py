@@ -2,7 +2,13 @@ import argparse
 import asyncio
 import atexit
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
+
+from pydantic import BaseModel
+
+from ..core.main import ContextProviderDescription, SlashCommandDescription
+from ..core.config import ContinueConfig
+from ..libs.util.devdata import dev_data_logger
 
 import uvicorn
 from fastapi import FastAPI
@@ -10,11 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..libs.util.create_async_task import create_async_task
 from ..libs.util.logging import logger
-from .gui import router as gui_router
-from .ide import router as ide_router
+from .gui import router as gui_router, sio_gui_app
+from .ide import router as ide_router, sio_ide_app
+from .sessions import router as sessions_router
 from .meilisearch_server import start_meilisearch, stop_meilisearch
-from .session_manager import router as sessions_router
-from .session_manager import session_manager
 from .global_config import global_config
 
 
@@ -39,6 +44,9 @@ app.include_router(ide_router)
 app.include_router(gui_router)
 app.include_router(sessions_router)
 
+app.mount("/ide", sio_ide_app, name="ide")
+app.mount("/gui", sio_gui_app, name="gui")
+
 # Add CORS support
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +56,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# region: Base endpoints
+
+try:
+    root_config = ContinueConfig.load_default()
+except Exception as e:
+    logger.error(f"Failed to load config.py: {e}")
+    root_config = ContinueConfig()
+
+
+@app.get("/slash_commands")
+def get_slash_commands() -> List[SlashCommandDescription]:
+    return root_config.get_slash_command_descriptions()
+
+
+@app.get("/context_providers")
+def get_context_providers() -> List[ContextProviderDescription]:
+    return root_config.get_context_provider_descriptions()
+
 
 @app.get("/health")
 def health():
@@ -55,12 +81,44 @@ def health():
     return {"status": "ok"}
 
 
+class FeedbackBody(BaseModel):
+    type: str
+    prompt: str
+    completion: str
+    feedback: bool
+
+
+@app.post("/feedback")
+def feedback(body: FeedbackBody):
+    dev_data_logger.capture("feedback", body.dict())
+
+
+# endregion
+
+
+async def cleanup_coroutine():
+    logger.debug("------ End logs ------")
+
+
+def cleanup():
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(cleanup_coroutine())
+    loop.close()
+
+
 def run_server(
-    port: int = 65432, host: str = "127.0.0.1", meilisearch_url: Optional[str] = None
+    port: int = 65432,
+    host: str = "127.0.0.1",
+    meilisearch_url: Optional[str] = None,
+    disable_meilisearch: bool = False,
 ):
     try:
         global global_config
         global_config.meilisearch_url = meilisearch_url
+        global_config.disable_meilisearch = disable_meilisearch
+
+        logger.debug("------ Begin Logs ------")
+        atexit.register(cleanup)
 
         config = uvicorn.Config(app, host=host, port=port)
         server = uvicorn.Server(config)
@@ -78,20 +136,6 @@ def run_server(
         cleanup()
         raise e
 
-
-async def cleanup_coroutine():
-    logger.debug("------ Cleaning Up ------")
-    for session_id in session_manager.sessions:
-        await session_manager.persist_session(session_id)
-
-
-def cleanup():
-    loop = asyncio.new_event_loop()
-    loop.run_until_complete(cleanup_coroutine())
-    loop.close()
-
-
-atexit.register(cleanup)
 
 if __name__ == "__main__":
     try:

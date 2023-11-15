@@ -18,15 +18,19 @@ from ..libs.util.templating import render_prompt_template
 from ..models.filesystem import FileSystem, RangeInFile, RangeInFileWithContents
 from ..models.filesystem_edit import (
     EditDiff,
-    FileEdit,
     FileEditWithFullContents,
     FileSystemEdit,
 )
 
-# from ....libs.llm.replicate import ReplicateLLM
-from ..models.main import Range
-from .main import ChatMessage, ContinueCustomException, Step
-from .observation import Observation, TextObservation, UserInputObservation
+from .main import (
+    ChatMessage,
+    ContinueCustomException,
+    DeltaStep,
+    SessionUpdate,
+    SetStep,
+    Step,
+)
+from .observation import TextObservation, UserInputObservation
 
 
 class ContinueSDK:
@@ -49,8 +53,8 @@ class MessageStep(Step):
     async def describe(self, models: Models) -> Coroutine[str, None, None]:
         return self.message
 
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
-        return TextObservation(text=self.message)
+    async def run(self, sdk: ContinueSDK):
+        yield TextObservation(text=self.message)
 
 
 class DisplayErrorStep(Step):
@@ -72,7 +76,7 @@ class DisplayErrorStep(Step):
     async def describe(self, models: Models) -> Coroutine[str, None, None]:
         return self.message
 
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
+    async def run(self, sdk: ContinueSDK):
         raise ContinueCustomException(message=self.message, title=self.title)
 
 
@@ -82,9 +86,8 @@ class FileSystemEditStep(ReversibleStep):
 
     hide: bool = True
 
-    async def run(self, sdk: "ContinueSDK") -> Coroutine[Observation, None, None]:
+    async def run(self, sdk: "ContinueSDK"):
         self._diff = await sdk.ide.applyFileSystemEdit(self.edit)
-        return None
 
     async def reverse(self, sdk: "ContinueSDK"):
         await sdk.ide.applyFileSystemEdit(self._diff.backward)
@@ -115,7 +118,7 @@ class ShellCommandsStep(Step):
             f"{cmds_str}\n\nSummarize what was done in these shell commands, using markdown bullet points:"
         )
 
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
+    async def run(self, sdk: ContinueSDK):
         process = subprocess.Popen(
             "/bin/bash",
             stdin=subprocess.PIPE,
@@ -130,8 +133,6 @@ class ShellCommandsStep(Step):
         if err is not None and err != "":
             self._err_text = err
             return TextObservation(text=err)
-
-        return None
 
 
 class DefaultModelEditCodeStep(Step):
@@ -195,6 +196,13 @@ class DefaultModelEditCodeStep(Step):
         else:
             return None
 
+    def on_stop(self, sdk: ContinueSDK):
+        index = len(sdk.history)
+        for i in range(index - 1, -1, -1):
+            yield SessionUpdate(index=i, update=SetStep(hide=True))
+            if sdk.history[i].step_type == "UserInputStep":
+                break
+
     async def get_prompt_parts(
         self, rif: RangeInFileWithContents, sdk: ContinueSDK, full_file_contents: str
     ):
@@ -231,7 +239,10 @@ class DefaultModelEditCodeStep(Step):
         )
 
         # If using 3.5 and overflows, upgrade to 3.5.16k
-        if model_to_use.model == "gpt-3.5-turbo":
+        if (
+            model_to_use.model == "gpt-3.5-turbo"
+            and model_to_use.__class__.__name__ == "OpenAI"
+        ):
             if total_tokens > model_to_use.context_length:
                 model_to_use = OpenAIFreeTrial(model="gpt-3.5-turbo-0613")
                 await sdk.start_model(model_to_use)
@@ -348,7 +359,11 @@ Please output the code to be inserted at the cursor in order to fulfill the user
         return prompt
 
     def is_end_line(self, line: str) -> bool:
-        return "</modified_code_to_edit>" in line or "</code_to_edit>" in line
+        return (
+            "</modified_code_to_edit>" in line
+            or "</code_to_edit>" in line
+            or "[/CODE]" in line
+        )
 
     def line_to_be_ignored(self, line: str, is_first_line: bool = False) -> bool:
         return (
@@ -424,7 +439,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
                 + "\n".join(full_suffix_lines)
             )
 
-            step_index = sdk.history.current_index
+            step_index = len(sdk.history) - 1
 
             await sdk.ide.showDiff(rif.filepath, new_file_contents, step_index)
 
@@ -576,6 +591,14 @@ Please output the code to be inserted at the cursor in order to fulfill the user
                     "user_input": self.user_input,
                     "file_prefix": file_prefix,
                     "file_suffix": file_suffix,
+                    "context_items": "\n\n".join(
+                        list(
+                            map(
+                                lambda x: x.content,
+                                await sdk.get_context_item_chat_messages(),
+                            )
+                        )
+                    ),
                 },
             )
             if isinstance(rendered, str):
@@ -590,7 +613,7 @@ Please output the code to be inserted at the cursor in order to fulfill the user
                 messages = rendered
 
             params = {"prompt": rendered}
-            if isinstance(template, PromptTemplate):
+            if template.__class__.__name__ == "PromptTemplate":
                 params.update(template.dict(exclude={"prompt"}))
 
             params.update(
@@ -623,11 +646,12 @@ Please output the code to be inserted at the cursor in order to fulfill the user
         try:
             last_task_time = time.time()
             async for chunk in generator:
+                if sdk.stopped:
+                    return
+
                 # Stop early if it is repeating the file_suffix or the step was deleted
                 if repeating_file_suffix:
                     break
-                if sdk.current_step_was_deleted():
-                    return
 
                 # Accumulate lines
                 chunk_lines = chunk.split("\n")
@@ -752,12 +776,15 @@ Please output the code to be inserted at the cursor in order to fulfill the user
         )
 
         if sdk.config.disable_summaries:
-            self.name = ""
-            self.description = f"Edited {len(self.range_in_files)} files"
-            await sdk.update_ui()
+            yield SetStep(
+                name="",
+                description=f"Edited {len(self.range_in_files)} files",
+            )
         else:
-            self.name = "Generating summary"
-            self.description = ""
+            yield SetStep(
+                name="Generating summary",
+                description="",
+            )
             async for chunk in sdk.models.summarize.stream_complete(
                 dedent(
                     f"""\
@@ -770,9 +797,9 @@ Please output the code to be inserted at the cursor in order to fulfill the user
             {self.summary_prompt}"""
                 )
             ):
-                self.description += chunk
-                await sdk.update_ui()
+                yield chunk
 
+        # TODO: Follow-up edits might die with this update???
         sdk.context.set("last_edit_user_input", self.user_input)
         sdk.context.set("last_edit_diff", changes)
         sdk.context.set("last_edit_range", self.range_in_files[-1].range)
@@ -787,7 +814,7 @@ class EditFileStep(Step):
     async def describe(self, models: Models) -> Coroutine[str, None, None]:
         return "Editing file: " + self.filepath
 
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
+    async def run(self, sdk: ContinueSDK):
         file_contents = await sdk.ide.readFile(self.filepath)
         await sdk.run_step(
             DefaultModelEditCodeStep(
@@ -829,8 +856,8 @@ class ManualEditStep(ReversibleStep):
             diffs.append(diff)
         return cls(edit_diff=EditDiff.from_sequence(diffs))
 
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
-        return None
+    async def run(self, sdk: ContinueSDK):
+        ...
 
     async def reverse(self, sdk: ContinueSDK):
         await sdk.ide.applyFileSystemEdit(self.edit_diff.backward)
@@ -856,36 +883,3 @@ class UserInputStep(Step):
         )
         self.description = self.user_input
         return UserInputObservation(user_input=self.user_input)
-
-
-class WaitForUserInputStep(Step):
-    prompt: str
-    name: str = "Waiting for user input"
-
-    _description: Union[str, None] = None
-    _response: Union[str, None] = None
-
-    async def describe(self, models: Models) -> Coroutine[str, None, None]:
-        if self._response is None:
-            return self.prompt
-        else:
-            return f"{self.prompt}\n\n`{self._response}`"
-
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
-        self.description = self.prompt
-        resp = await sdk.wait_for_user_input()
-        self.description = f"{self.prompt}\n\n`{resp}`"
-        return TextObservation(text=resp)
-
-
-class WaitForUserConfirmationStep(Step):
-    prompt: str
-    name: str = "Waiting for user confirmation"
-
-    async def describe(self, models: Models) -> Coroutine[str, None, None]:
-        return self.prompt
-
-    async def run(self, sdk: ContinueSDK) -> Coroutine[Observation, None, None]:
-        self.description = self.prompt
-        resp = await sdk.wait_for_user_input()
-        return TextObservation(text=resp)

@@ -21,6 +21,7 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.keymap.KeymapManager
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupActivity
 import com.intellij.openapi.ui.DialogWrapper
@@ -66,7 +67,7 @@ fun serverVersionPath(): String {
 fun serverBinaryPath(): String {
     val exeFile = if (System.getProperty("os.name").toLowerCase()
             .contains("win")
-    ) "run.exe" else "run"
+    ) "continue_server.exe" else "continue_server"
     return Paths.get(serverPath(), "exe", exeFile).toString()
 }
 
@@ -309,10 +310,10 @@ suspend fun startContinuePythonServer(project: Project) {
     // Determine from OS details which file to download
     val filename = when {
         System.getProperty("os.name")
-            .toLowerCase().contains("win") -> "windows/run.exe"
+            .toLowerCase().contains("win") -> "windows/continue_server.exe"
         System.getProperty("os.name").startsWith("Mac", ignoreCase = true) ->
-            if (System.getProperty("os.arch") == "arm64") "apple-silicon/run" else "mac/run"
-        else -> "linux/run"
+            if (System.getProperty("os.arch") == "arm64") "apple-silicon/continue_server" else "mac/continue_server"
+        else -> "linux/continue_server"
     }
 
     val destination = serverBinaryPath()
@@ -459,7 +460,7 @@ class WelcomeDialogWrapper(val project: Project) : DialogWrapper(true) {
     }
 }
 
-class ContinuePluginStartupActivity : StartupActivity, Disposable {
+class ContinuePluginStartupActivity : StartupActivity, Disposable, DumbAware {
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
 
     override fun runActivity(project: Project) {
@@ -483,16 +484,16 @@ class ContinuePluginStartupActivity : StartupActivity, Disposable {
         val keyStroke = KeyStroke.getKeyStroke(shortcut)
         val actionIds = keymap.getActionIds(keyStroke)
 
-
-        val actionManager = ActionManager.getInstance()
          for (actionId in actionIds) {
              if (actionId.startsWith("continue")) {
                  continue
              }
-             val action = actionManager.getAction(actionId)
-             val shortcuts = action.shortcutSet.shortcuts.filterNot { it is KeyboardShortcut && it.firstKeyStroke == keyStroke }.toTypedArray()
-             val newShortcutSet = CustomShortcutSet(*shortcuts)
-             action.registerCustomShortcutSet(newShortcutSet, null)
+             val shortcuts = keymap.getShortcuts(actionId)
+             for (shortcut in shortcuts) {
+                 if (shortcut is KeyboardShortcut && shortcut.firstKeyStroke == keyStroke) {
+                     keymap.removeShortcut(actionId, shortcut)
+                 }
+             }
          }
     }
 
@@ -539,9 +540,7 @@ class ContinuePluginStartupActivity : StartupActivity, Disposable {
             GlobalScope.async(Dispatchers.IO) {
                 startContinuePythonServer(project)
 
-                val wsUrl = getContinueServerUrl().replace("http://", "ws://").replace("https://", "wss://")
                 val ideProtocolClient = IdeProtocolClient(
-                    "$wsUrl/ide/ws",
                     continuePluginService,
                     defaultStrategy,
                     coroutineScope,
@@ -557,16 +556,12 @@ class ContinuePluginStartupActivity : StartupActivity, Disposable {
                                 coroutineScope
                         )
 
-                val newSessionId = ideProtocolClient.getSessionIdAsync().await()
-                val sessionId = newSessionId ?: ""
-
                 // Reload the WebView
                 continuePluginService?.let {
                     val workspacePaths =
                             if (project.basePath != null) arrayOf(project.basePath) else emptyList<String>()
 
                     continuePluginService.worksapcePaths = workspacePaths as Array<String>
-                    continuePluginService.sessionId = sessionId
                 }
 
                 EditorFactory.getInstance().eventMulticaster.addSelectionListener(

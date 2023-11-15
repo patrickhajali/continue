@@ -4,44 +4,75 @@ import * as os from "os";
 import * as fs from "fs";
 
 import { acceptDiffCommand, rejectDiffCommand } from "./diffs";
-import { debugPanelWebview } from "./debugPanel";
+import { debugPanelWebview, getSidebarContent } from "./debugPanel";
 import { ideProtocolClient } from "./activation/activate";
 
-let focusedOnContinueInput = false;
-
 function addHighlightedCodeToContext(edit: boolean) {
-  focusedOnContinueInput = !focusedOnContinueInput;
   const editor = vscode.window.activeTextEditor;
   if (editor) {
     const selection = editor.selection;
     if (selection.isEmpty) return;
     const range = new vscode.Range(selection.start, selection.end);
     const contents = editor.document.getText(range);
-    ideProtocolClient?.sendHighlightedCode(
-      [
-        {
-          filepath: editor.document.uri.fsPath,
-          contents,
-          range: {
-            start: {
-              line: selection.start.line,
-              character: selection.start.character,
-            },
-            end: {
-              line: selection.end.line,
-              character: selection.end.character,
-            },
-          },
+    const rangeInFileWithContents = {
+      filepath: editor.document.uri.fsPath,
+      contents,
+      range: {
+        start: {
+          line: selection.start.line,
+          character: selection.start.character,
         },
-      ],
-      edit
-    );
+        end: {
+          line: selection.end.line,
+          character: selection.end.character,
+        },
+      },
+    };
+
+    debugPanelWebview?.postMessage({
+      type: "highlightedCode",
+      rangeInFileWithContents,
+      edit,
+    });
   }
 }
 
-export const setFocusedOnContinueInput = (value: boolean) => {
-  focusedOnContinueInput = value;
-};
+async function addEntireFileToContext(filepath: vscode.Uri, edit: boolean) {
+  // If a directory, add all files in the directory
+  const stat = await vscode.workspace.fs.stat(filepath);
+  if (stat.type === vscode.FileType.Directory) {
+    const files = await vscode.workspace.fs.readDirectory(filepath);
+    for (const [filename, type] of files) {
+      if (type === vscode.FileType.File) {
+        addEntireFileToContext(vscode.Uri.joinPath(filepath, filename), edit);
+      }
+    }
+    return;
+  }
+
+  // Get the contents of the file
+  const contents = (await vscode.workspace.fs.readFile(filepath)).toString();
+  const rangeInFileWithContents = {
+    filepath: filepath.fsPath,
+    contents: contents,
+    range: {
+      start: {
+        line: 0,
+        character: 0,
+      },
+      end: {
+        line: contents.split(os.EOL).length - 1,
+        character: 0,
+      },
+    },
+  };
+
+  debugPanelWebview?.postMessage({
+    type: "highlightedCode",
+    rangeInFileWithContents,
+    edit,
+  });
+}
 
 // Copy everything over from extension.ts
 const commandsMap: { [command: string]: (...args: any) => any } = {
@@ -70,7 +101,6 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
     debugPanelWebview?.postMessage({
       type: "focusContinueInputWithEdit",
     });
-    focusedOnContinueInput = true;
   },
   "continue.toggleAuxiliaryBar": () => {
     vscode.commands.executeCommand("workbench.action.toggleAuxiliaryBar");
@@ -82,7 +112,10 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
       title: "Continue Quick Input",
     });
     if (text) {
-      ideProtocolClient.sendMainUserInput(text);
+      debugPanelWebview?.postMessage({
+        type: "userInput",
+        input: text,
+      });
       if (!text.startsWith("/edit")) {
         vscode.commands.executeCommand("continue.continueGUIView.focus");
       }
@@ -126,6 +159,9 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
   "continue.sendMainUserInput": (text: string) => {
     ideProtocolClient.sendMainUserInput(text);
   },
+  "continue.shareSession": () => {
+    ideProtocolClient.sendMainUserInput("/share");
+  },
   "continue.selectRange": (startLine: number, endLine: number) => {
     if (!vscode.window.activeTextEditor) {
       return;
@@ -150,6 +186,71 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
   },
   "continue.sendToTerminal": (text: string) => {
     ideProtocolClient.runCommand(text);
+  },
+  "continue.toggleFullScreen": () => {
+    // Check if full screen is already open by checking open tabs
+    const tabs = vscode.window.tabGroups.all.flatMap(
+      (tabGroup) => tabGroup.tabs
+    );
+
+    const fullScreenTab = tabs.find(
+      (tab) => (tab.input as any).viewType?.endsWith("continue.continueGUIView")
+    );
+
+    // Check if the active editor is the Continue GUI View
+    if (fullScreenTab && fullScreenTab.isActive) {
+      vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+      vscode.commands.executeCommand("continue.focusContinueInput");
+      return;
+    }
+
+    if (fullScreenTab) {
+      // Focus the tab
+      const openOptions = {
+        preserveFocus: true,
+        preview: fullScreenTab.isPreview,
+        viewColumn: fullScreenTab.group.viewColumn,
+      };
+
+      vscode.commands.executeCommand(
+        "vscode.open",
+        (fullScreenTab.input as any).uri,
+        openOptions
+      );
+      return;
+    }
+
+    // Close the sidebars
+    // vscode.commands.executeCommand("workbench.action.closeSidebar");
+    vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
+    // vscode.commands.executeCommand("workbench.action.toggleZenMode");
+    const panel = vscode.window.createWebviewPanel(
+      "continue.continueGUIView",
+      "Continue",
+      vscode.ViewColumn.One
+    );
+    panel.webview.html = getSidebarContent(panel, undefined, undefined, true);
+  },
+  "continue.selectFilesAsContext": (
+    firstUri: vscode.Uri,
+    uris: vscode.Uri[]
+  ) => {
+    vscode.commands.executeCommand("continue.continueGUIView.focus");
+
+    for (const uri of uris) {
+      addEntireFileToContext(uri, false);
+    }
+  },
+  "continue.updateAllReferences": (filepath: vscode.Uri) => {
+    // Get the cursor position in the editor
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      return;
+    }
+    const position = editor.selection.active;
+    ideProtocolClient.sendMainUserInput(
+      `/references ${filepath.fsPath} ${position.line} ${position.character}`
+    );
   },
 };
 

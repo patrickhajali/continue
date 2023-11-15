@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import re
 import subprocess
 from typing import Optional
 
@@ -78,11 +79,14 @@ async def ensure_meilisearch_installed() -> bool:
         if meilisearchPath in existing_paths:
             try:
                 os.remove(meilisearchPath)
-            except:
+            except Exception:
                 pass
             existing_paths.remove(meilisearchPath)
 
-        await download_meilisearch()
+        try:
+            await asyncio.wait_for(download_meilisearch(), timeout=60)
+        except asyncio.TimeoutError:
+            logger.critical("Timed out trying to download MeiliSearch")
 
         # Clear the existing directories
         for p in existing_paths:
@@ -141,6 +145,10 @@ async def start_meilisearch(url: Optional[str] = None):
         meilisearch_url = url
         return
 
+    if global_config.disable_meilisearch:
+        logger.debug("MeiliSearch disabled")
+        return
+
     serverPath = getServerFolderPath()
 
     # Check if MeiliSearch is installed, if not download
@@ -160,7 +168,7 @@ async def start_meilisearch(url: Optional[str] = None):
             shell=True,
         )
 
-    logger.debug("Meilisearch started")
+    logger.info(f"Meilisearch started at {meilisearch_url}")
 
 
 def stop_meilisearch():
@@ -195,3 +203,7 @@ async def restart_meilisearch():
     stop_meilisearch()
     kill_proc(7700)
     await start_meilisearch(url=global_config.meilisearch_url)
+
+
+def remove_meilisearch_disallowed_chars(id: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z_-]", "", id)

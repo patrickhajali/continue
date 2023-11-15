@@ -16,128 +16,97 @@ import {
   rejectSuggestionCommand,
 } from "./suggestions";
 import { FileEditWithFullContents } from "../schema/FileEditWithFullContents";
-import { WebsocketMessenger } from "./util/messenger";
 import { diffManager } from "./diffs";
 const os = require("os");
 const path = require("path");
+import { v4 } from "uuid";
+import { windowId } from "./activation/activate";
+import * as io from "socket.io-client";
+import { debugPanelWebview, getSidebarContent } from "./debugPanel";
 
 const continueVirtualDocumentScheme = "continue";
 
 class IdeProtocolClient {
-  private messenger: WebsocketMessenger | null = null;
   private readonly context: vscode.ExtensionContext;
 
   private _makingEdit = 0;
 
-  private _highlightDebounce: NodeJS.Timeout | null = null;
-
-  private _lastReloadTime: number = 16;
-  private _reconnectionTimeouts: NodeJS.Timeout[] = [];
-
-  sessionId: string | null = null;
   private _serverUrl: string;
+  private socket: io.Socket;
 
-  private _newWebsocketMessenger() {
-    const requestUrl =
-      this._serverUrl + (this.sessionId ? `?session_id=${this.sessionId}` : "");
-    const messenger = new WebsocketMessenger(requestUrl);
-    this.messenger = messenger;
-
-    const reconnect = () => {
-      this.messenger = null;
-
-      // Exponential backoff to reconnect
-      this._reconnectionTimeouts.forEach((to) => clearTimeout(to));
-
-      const timeout = setTimeout(() => {
-        if (this.messenger?.websocket?.readyState === 1) {
-          return;
-        }
-        this._newWebsocketMessenger();
-      }, this._lastReloadTime);
-
-      this._reconnectionTimeouts.push(timeout);
-      this._lastReloadTime = Math.min(2 * this._lastReloadTime, 5000);
-    };
-    messenger.onOpen(() => {
-      this._reconnectionTimeouts.forEach((to) => clearTimeout(to));
+  private send(messageType: string, messageId: string, data: object) {
+    const payload = JSON.stringify({
+      message_type: messageType,
+      data,
+      message_id: messageId,
     });
-    messenger.onClose(() => {
-      reconnect();
-    });
-    messenger.onError(() => {
-      reconnect();
-    });
-    messenger.onMessage((messageType, data, messenger) => {
-      this.handleMessage(messageType, data, messenger).catch((err) => {
-        console.log("Error handling message: ", err);
-        vscode.window
-          .showErrorMessage(
-            `Error handling message (${messageType}) from Continue server: ` +
-              err,
-            "View Logs"
-          )
-          .then((selection) => {
-            if (selection === "View Logs") {
-              vscode.commands.executeCommand("continue.viewLogs");
-            }
-          });
-      });
-    });
+    this.socket.send(payload);
   }
 
   constructor(serverUrl: string, context: vscode.ExtensionContext) {
     this.context = context;
     this._serverUrl = serverUrl;
-    this._newWebsocketMessenger();
+    const windowInfo = {
+      window_id: windowId,
+      workspace_directory: this.getWorkspaceDirectory(),
+      unique_id: this.getUniqueId(),
+      ide_info: {
+        name: "vscode",
+        version: vscode.version,
+        remote_name: vscode.env.remoteName,
+      },
+    };
 
-    // Setup listeners for any file changes in open editors
-    // vscode.workspace.onDidChangeTextDocument((event) => {
-    //   if (this._makingEdit === 0) {
-    //     let fileEdits: FileEditWithFullContents[] = event.contentChanges.map(
-    //       (change) => {
-    //         return {
-    //           fileEdit: {
-    //             filepath: event.document.uri.fsPath,
-    //             range: {
-    //               start: {
-    //                 line: change.range.start.line,
-    //                 character: change.range.start.character,
-    //               },
-    //               end: {
-    //                 line: change.range.end.line,
-    //                 character: change.range.end.character,
-    //               },
-    //             },
-    //             replacement: change.text,
-    //           },
-    //           fileContents: event.document.getText(),
-    //         };
-    //       }
-    //     );
-    //     this.messenger?.send("fileEdits", { fileEdits });
-    //   } else {
-    //     this._makingEdit--;
-    //   }
-    // });
+    const requestUrl = `${this._serverUrl}?window_info=${encodeURIComponent(
+      JSON.stringify(windowInfo)
+    )}`;
+    console.log("Connecting to Continue server at: ", requestUrl);
+    this.socket = io.io(requestUrl, {
+      path: "/ide/socket.io",
+      transports: ["websocket", "polling", "flashsocket"],
+    });
+
+    this.socket.on("message", (message, callback) => {
+      const {
+        message_type: messageType,
+        data,
+        message_id: messageId,
+      } = message;
+      this.handleMessage(messageType, data, messageId, callback).catch(
+        (err) => {
+          console.log("Error handling message: ", err);
+          vscode.window
+            .showErrorMessage(
+              `Error handling message (${messageType}) from Continue server: ` +
+                err,
+              "View Logs"
+            )
+            .then((selection) => {
+              if (selection === "View Logs") {
+                vscode.commands.executeCommand("continue.viewLogs");
+              }
+            });
+        }
+      );
+    });
 
     // Listen for new file creation
     vscode.workspace.onDidCreateFiles((event) => {
       const filepaths = event.files.map((file) => file.fsPath);
-      this.messenger?.send("filesCreated", { filepaths });
+      this.send("filesCreated", v4(), { filepaths });
     });
 
     // Listen for file deletion
     vscode.workspace.onDidDeleteFiles((event) => {
       const filepaths = event.files.map((file) => file.fsPath);
-      this.messenger?.send("filesDeleted", { filepaths });
+      this.send("filesDeleted", v4(), { filepaths });
     });
 
     // Listen for file renaming
     vscode.workspace.onDidRenameFiles((event) => {
       const oldFilepaths = event.files.map((file) => file.oldUri.fsPath);
       const newFilepaths = event.files.map((file) => file.newUri.fsPath);
-      this.messenger?.send("filesRenamed", {
+      this.send("filesRenamed", v4(), {
         old_filepaths: oldFilepaths,
         new_filepaths: newFilepaths,
       });
@@ -147,7 +116,7 @@ class IdeProtocolClient {
     vscode.workspace.onDidSaveTextDocument((event) => {
       const filepath = event.uri.fsPath;
       const contents = event.getText();
-      this.messenger?.send("fileSaved", { filepath, contents });
+      this.send("fileSaved", v4(), { filepath, contents });
     });
 
     // Setup listeners for any selection changes in open editors
@@ -234,58 +203,70 @@ class IdeProtocolClient {
   async handleMessage(
     messageType: string,
     data: any,
-    messenger: WebsocketMessenger
+    messageId: string,
+    callback: (data: any) => void
   ) {
+    const respond = (responseData: any) => {
+      if (typeof callback === "undefined") {
+        console.log("callback is undefined");
+        return;
+      }
+      callback({
+        message_type: messageType,
+        data: responseData,
+        message_id: messageId,
+      });
+    };
     switch (messageType) {
       case "highlightedCode":
-        messenger.send("highlightedCode", {
+        respond({
           highlightedCode: this.getHighlightedCode(),
         });
         break;
       case "workspaceDirectory":
-        messenger.send("workspaceDirectory", {
+        respond({
           workspaceDirectory: this.getWorkspaceDirectory(),
         });
         break;
       case "uniqueId":
-        messenger.send("uniqueId", {
+        respond({
           uniqueId: this.getUniqueId(),
         });
         break;
       case "ide":
-        messenger.send("ide", {
+        respond({
           name: "vscode",
           version: vscode.version,
           remoteName: vscode.env.remoteName,
         });
         break;
       case "fileExists":
-        messenger.send("fileExists", {
+        respond({
           exists: await this.fileExists(data.filepath),
         });
         break;
       case "getUserSecret":
-        messenger.send("getUserSecret", {
+        respond({
           value: await this.getUserSecret(data.key),
         });
         break;
       case "openFiles":
-        messenger.send("openFiles", {
+        respond({
           openFiles: this.getOpenFiles(),
         });
         break;
       case "visibleFiles":
-        messenger.send("visibleFiles", {
+        respond({
           visibleFiles: this.getVisibleFiles(),
         });
         break;
       case "readFile":
-        messenger.send("readFile", {
+        respond({
           contents: await this.readFile(data.filepath),
         });
         break;
       case "getTerminalContents":
-        messenger.send("getTerminalContents", {
+        respond({
           contents: await this.getTerminalContents(data.commands),
         });
         break;
@@ -300,13 +281,13 @@ class IdeProtocolClient {
           console.log("Error listing directory contents: ", e);
           contents = [];
         }
-        messenger.send("listDirectoryContents", {
+        respond({
           contents,
         });
         break;
       case "editFile":
         const fileEdit = await this.editFile(data.edit);
-        messenger.send("editFile", {
+        respond({
           fileEdit,
         });
         break;
@@ -314,7 +295,7 @@ class IdeProtocolClient {
         this.highlightCode(data.rangeInFile, data.color);
         break;
       case "runCommand":
-        messenger.send("runCommand", {
+        respond({
           output: await this.runCommand(data.command),
         });
         break;
@@ -351,13 +332,73 @@ class IdeProtocolClient {
       case "showDiff":
         await this.showDiff(data.filepath, data.replacement, data.step_index);
         break;
+      case "showMultiFileEdit":
+        this.showMultiFileEdit(data.edits);
+        break;
       case "getSessionId":
       case "connected":
+        break;
+      case "textDocument/definition":
+        respond({
+          locations: await this.gotoDefinition(data.filepath, data.position),
+        });
+        break;
+      case "textDocument/documentSymbol":
+        respond({ symbols: await this.documentSymbol(data.filepath) });
+        break;
+      case "textDocument/references":
+        const locations = await this.references(data.filepath, data.position);
+        respond({
+          locations,
+        });
+        break;
+      case "textDocument/foldingRange":
+        respond({
+          ranges: await this.foldingRanges(data.filepath),
+        });
         break;
       default:
         throw Error("Unknown message type:" + messageType);
     }
   }
+
+  async gotoDefinition(
+    filepath: string,
+    position: vscode.Position
+  ): Promise<vscode.Location[]> {
+    const locations: vscode.Location[] = await vscode.commands.executeCommand(
+      "vscode.executeDefinitionProvider",
+      uriFromFilePath(filepath),
+      position
+    );
+    return locations;
+  }
+
+  async documentSymbol(filepath: string): Promise<vscode.DocumentSymbol[]> {
+    return await vscode.commands.executeCommand(
+      "vscode.executeDocumentSymbolProvider",
+      uriFromFilePath(filepath)
+    );
+  }
+
+  async references(
+    filepath: string,
+    position: vscode.Position
+  ): Promise<vscode.Location[]> {
+    return await vscode.commands.executeCommand(
+      "vscode.executeReferenceProvider",
+      uriFromFilePath(filepath),
+      position
+    );
+  }
+
+  async foldingRanges(filepath: string): Promise<vscode.FoldingRange[]> {
+    return await vscode.commands.executeCommand(
+      "vscode.executeFoldingRangeProvider",
+      uriFromFilePath(filepath)
+    );
+  }
+
   getWorkspaceDirectory() {
     if (!vscode.workspace.workspaceFolders) {
       // Return the home directory
@@ -429,11 +470,21 @@ class IdeProtocolClient {
   }
 
   async setTelemetryEnabled(enabled: boolean) {
-    this.messenger?.send("setTelemetryEnabled", { enabled });
+    this.send("setTelemetryEnabled", v4(), { enabled });
   }
 
   async showDiff(filepath: string, replacement: string, step_index: number) {
     await diffManager.writeDiff(filepath, replacement, step_index);
+  }
+
+  showMultiFileEdit(edits: FileEdit[]) {
+    vscode.commands.executeCommand("workbench.action.closeAuxiliaryBar");
+    const panel = vscode.window.createWebviewPanel(
+      "continue.continueGUIView",
+      "Continue",
+      vscode.ViewColumn.One
+    );
+    panel.webview.html = getSidebarContent(panel, "/monaco", edits);
   }
 
   openFile(filepath: string) {
@@ -454,9 +505,9 @@ class IdeProtocolClient {
     vscode.workspace
       .openTextDocument(
         vscode.Uri.parse(
-          `${continueVirtualDocumentScheme}:${name}?${encodeURIComponent(
-            contents
-          )}`
+          `${continueVirtualDocumentScheme}:${encodeURIComponent(
+            name
+          )}?${encodeURIComponent(contents)}`
         )
       )
       .then((doc) => {
@@ -493,28 +544,6 @@ class IdeProtocolClient {
   // ------------------------------------ //
   // Initiate Request
 
-  async getSessionId(): Promise<string> {
-    await new Promise((resolve, reject) => {
-      // Repeatedly try to connect to the server
-      const interval = setInterval(() => {
-        if (
-          this.messenger &&
-          this.messenger.websocket.readyState === 1 // 1 => OPEN
-        ) {
-          clearInterval(interval);
-          resolve(null);
-        } else {
-          // console.log("Websocket not yet open, trying again...");
-        }
-      }, 1000);
-    });
-    console.log("Getting session ID");
-    const resp = await this.messenger?.sendAndReceive("getSessionId", {});
-    console.log("New Continue session with ID: ", resp.sessionId);
-    this.sessionId = resp.sessionId;
-    return resp.sessionId;
-  }
-
   acceptRejectSuggestion(accept: boolean, key: SuggestionRanges) {
     if (accept) {
       acceptSuggestionCommand(key);
@@ -529,24 +558,26 @@ class IdeProtocolClient {
   // Checks to see if the editor is a code editor.
   // In some cases vscode.window.visibleTextEditors can return non-code editors
   // e.g. terminal editors in side-by-side mode
-  private editorIsCode(editor: vscode.TextEditor) {
-    return !(
-      editor.document.languageId === "plaintext" &&
-      editor.document.getText() === "accessible-buffer-accessible-buffer-"
+  private documentIsCode(document: vscode.TextDocument) {
+    return (
+      !(
+        document.languageId === "plaintext" &&
+        document.getText() === "accessible-buffer-accessible-buffer-"
+      ) && !document.uri.scheme.startsWith("git")
     );
   }
 
   getOpenFiles(): string[] {
-    return vscode.window.visibleTextEditors
-      .filter((editor) => this.editorIsCode(editor))
-      .map((editor) => {
-        return editor.document.uri.fsPath;
+    return vscode.workspace.textDocuments
+      .filter((document) => this.documentIsCode(document))
+      .map((document) => {
+        return document.uri.fsPath;
       });
   }
 
   getVisibleFiles(): string[] {
     return vscode.window.visibleTextEditors
-      .filter((editor) => this.editorIsCode(editor))
+      .filter((editor) => this.documentIsCode(editor.document))
       .map((editor) => {
         return editor.document.uri.fsPath;
       });
@@ -554,7 +585,7 @@ class IdeProtocolClient {
 
   saveFile(filepath: string) {
     vscode.window.visibleTextEditors
-      .filter((editor) => this.editorIsCode(editor))
+      .filter((editor) => this.documentIsCode(editor.document))
       .forEach((editor) => {
         if (editor.document.uri.fsPath === filepath) {
           editor.document.save();
@@ -615,19 +646,24 @@ class IdeProtocolClient {
   }
 
   async readFile(filepath: string): Promise<string> {
+    const MAX_BYTES = 100000; // 0.1MB - socket.io has a 1MB limit, but seems to die a around 0.5MB
     let contents: string | undefined;
     if (typeof contents === "undefined") {
       try {
         const fileStats = await vscode.workspace.fs.stat(
           uriFromFilePath(filepath)
         );
-        if (fileStats.size > 1000000) {
+        if (fileStats.size > 10 * MAX_BYTES) {
           return "";
         }
 
-        contents = await vscode.workspace.fs
-          .readFile(uriFromFilePath(filepath))
-          .then((bytes) => new TextDecoder().decode(bytes));
+        const bytes = await vscode.workspace.fs.readFile(
+          uriFromFilePath(filepath)
+        );
+
+        // Truncate the buffer to the first MAX_BYTES
+        const truncatedBytes = bytes.slice(0, MAX_BYTES);
+        contents = new TextDecoder().decode(truncatedBytes);
       } catch {
         contents = "";
       }
@@ -694,7 +730,7 @@ class IdeProtocolClient {
     // TODO
     let rangeInFiles: RangeInFile[] = [];
     vscode.window.visibleTextEditors
-      .filter((editor) => this.editorIsCode(editor))
+      .filter((editor) => this.documentIsCode(editor.document))
       .forEach((editor) => {
         editor.selections.forEach((selection) => {
           // if (!selection.isEmpty) {
@@ -729,35 +765,37 @@ class IdeProtocolClient {
   }
 
   sendCommandOutput(output: string) {
-    this.messenger?.send("commandOutput", { output });
+    this.send("commandOutput", v4(), { output });
   }
 
   sendHighlightedCode(
     highlightedCode: (RangeInFile & { contents: string })[],
     edit?: boolean
   ) {
-    this.messenger?.send("highlightedCodePush", { highlightedCode, edit });
+    this.send("highlightedCodePush", v4(), {
+      highlightedCode,
+      edit,
+    });
   }
 
   sendAcceptRejectSuggestion(accepted: boolean) {
-    this.messenger?.send("acceptRejectSuggestion", { accepted });
+    this.send("acceptRejectSuggestion", v4(), { accepted });
   }
 
   sendAcceptRejectDiff(accepted: boolean, stepIndex: number) {
-    this.messenger?.send("acceptRejectDiff", { accepted, stepIndex });
+    this.send("acceptRejectDiff", v4(), { accepted, stepIndex });
   }
 
   sendMainUserInput(input: string) {
-    this.messenger?.send("mainUserInput", { input });
+    debugPanelWebview?.postMessage({
+      type: "userInput",
+      input,
+    });
   }
 
   async debugTerminal() {
-    const contents = await this.getTerminalContents();
-    this.messenger?.send("debugTerminal", { contents });
-  }
-
-  deleteAtIndex(index: number) {
-    this.messenger?.send("deleteAtIndex", { index });
+    const contents = (await this.getTerminalContents()).trim();
+    this.send("debugTerminal", v4(), { contents });
   }
 }
 

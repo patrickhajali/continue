@@ -6,10 +6,12 @@ import { RootStore } from "../redux/store";
 import { useNavigate } from "react-router-dom";
 import { lightGray, secondaryDark, vscBackground } from "../components";
 import styled from "styled-components";
-import { ArrowLeftIcon } from "@heroicons/react/24/outline";
+import { ArrowLeftIcon, TrashIcon } from "@heroicons/react/24/outline";
 import CheckDiv from "../components/CheckDiv";
-import { temporarilyClearSession } from "../redux/slices/serverStateReducer";
 import { getFontSize } from "../util";
+import { newSession } from "../redux/slices/sessionStateReducer";
+import { PersistedSessionInfo } from "../schema/PersistedSessionInfo";
+import HeaderButtonWithText from "../components/HeaderButtonWithText";
 
 const Tr = styled.tr`
   &:hover {
@@ -39,15 +41,90 @@ const SectionHeader = styled.tr`
   font-weight: bold;
   text-align: center;
   margin: 0;
+  position: sticky;
 `;
 
 const TdDiv = styled.div`
   cursor: pointer;
+  flex-grow: 1;
   padding-left: 1rem;
   padding-right: 1rem;
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
 `;
+
+function TableRow({
+  session,
+  date,
+  onDelete,
+}: {
+  session: SessionInfo;
+  date: Date;
+  onDelete: (sessionId: string) => void;
+}) {
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
+  const client = useContext(GUIClientContext);
+  const apiUrl = (window as any).serverUrl;
+  const currentSession = useSelector((state: RootStore) => state.sessionState);
+  const workspacePaths = (window as any).workspacePaths || [""];
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <td
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="flex justify-between items-center w-full">
+        <TdDiv
+          onClick={async () => {
+            // Save current session
+            client?.persistSession(currentSession, workspacePaths[0]);
+
+            // Load new session
+            const response = await fetch(
+              `${apiUrl}/sessions/${session.session_id}`
+            );
+            if (!response.ok) {
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const json: PersistedSessionInfo = await response.json();
+            client?.stopSession();
+            dispatch(newSession(json));
+            navigate("/");
+          }}
+        >
+          <div className="text-md">{session.title}</div>
+          <div className="text-gray-400">
+            {date.toLocaleString("en-US", {
+              year: "2-digit",
+              month: "2-digit",
+              day: "2-digit",
+              hour: "numeric",
+              minute: "2-digit",
+              hour12: true,
+            })}
+            {" | "}
+            {lastPartOfPath(session.workspace_directory || "")}/
+          </div>
+        </TdDiv>
+
+        {hovered && (
+          <HeaderButtonWithText
+            className="mr-2"
+            text="Delete"
+            onClick={async () => {
+              client?.deleteSession(session.session_id);
+              onDelete(session.session_id);
+            }}
+          >
+            <TrashIcon width="1.3em" height="1.3em" />
+          </HeaderButtonWithText>
+        )}
+      </div>
+    </td>
+  );
+}
 
 function lastPartOfPath(path: string): string {
   const sep = path.includes("/") ? "/" : "\\";
@@ -56,18 +133,23 @@ function lastPartOfPath(path: string): string {
 
 function History() {
   const navigate = useNavigate();
-  const dispatch = useDispatch();
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [filteredAndSortedSessions, setFilteredAndSortedSessions] = useState<
     SessionInfo[]
   >([]);
   const client = useContext(GUIClientContext);
-  const apiUrl = useSelector((state: RootStore) => state.config.apiUrl);
-  const workspacePaths = useSelector(
-    (state: RootStore) => state.config.workspacePaths
-  );
+  const apiUrl = (window as any).serverUrl;
+  const workspacePaths = (window as any).workspacePaths || [];
+
+  const deleteSessionInUI = async (sessionId: string) => {
+    setSessions((prev) =>
+      prev.filter((session) => session.session_id !== sessionId)
+    );
+  };
 
   const [filteringByWorkspace, setFilteringByWorkspace] = useState(false);
+  const stickyHistoryHeaderRef = React.useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   useEffect(() => {
     const fetchSessions = async () => {
@@ -105,6 +187,10 @@ function History() {
     );
   }, [filteringByWorkspace, sessions]);
 
+  useEffect(() => {
+      setHeaderHeight(stickyHistoryHeaderRef.current?.clientHeight || 100);
+  }, [stickyHistoryHeaderRef.current]);
+
   const yesterday = new Date(Date.now() - 1000 * 60 * 60 * 24);
   const lastWeek = new Date(Date.now() - 1000 * 60 * 60 * 24 * 7);
   const lastMonth = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30);
@@ -112,7 +198,7 @@ function History() {
 
   return (
     <div className="overflow-y-scroll" style={{ fontSize: getFontSize() }}>
-      <div className="sticky top-0" style={{ backgroundColor: vscBackground }}>
+      <div ref={stickyHistoryHeaderRef} className="sticky top-0" style={{ backgroundColor: vscBackground }}>
         <div
           className="items-center flex m-0 p-0"
           style={{
@@ -166,43 +252,25 @@ function History() {
               return (
                 <Fragment key={index}>
                   {index === 0 && date > yesterday && (
-                    <SectionHeader>Today</SectionHeader>
+                    <SectionHeader style={{ top: `${headerHeight}px` }}>Today</SectionHeader>
                   )}
                   {date < yesterday &&
                     date > lastWeek &&
                     prevDate > yesterday && (
-                      <SectionHeader>This Week</SectionHeader>
+                    <SectionHeader style={{ top: `${headerHeight}px` }}>This Week</SectionHeader>
                     )}
                   {date < lastWeek &&
                     date > lastMonth &&
                     prevDate > lastWeek && (
-                      <SectionHeader>This Month</SectionHeader>
+                    <SectionHeader style={{ top: `${headerHeight}px` }}>This Month</SectionHeader>
                     )}
 
                   <Tr key={index}>
-                    <td>
-                      <TdDiv
-                        onClick={() => {
-                          client?.loadSession(session.session_id);
-                          dispatch(temporarilyClearSession(true));
-                          navigate("/");
-                        }}
-                      >
-                        <div className="text-md">{session.title}</div>
-                        <div className="text-gray-400">
-                          {date.toLocaleString("en-US", {
-                            year: "2-digit",
-                            month: "2-digit",
-                            day: "2-digit",
-                            hour: "numeric",
-                            minute: "2-digit",
-                            hour12: true,
-                          })}
-                          {" | "}
-                          {lastPartOfPath(session.workspace_directory || "")}/
-                        </div>
-                      </TdDiv>
-                    </td>
+                    <TableRow
+                      session={session}
+                      date={date}
+                      onDelete={() => deleteSessionInUI(session.session_id)}
+                    ></TableRow>
                   </Tr>
                 </Fragment>
               );

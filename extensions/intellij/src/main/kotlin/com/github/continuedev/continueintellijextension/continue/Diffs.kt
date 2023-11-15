@@ -12,6 +12,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.ServiceManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.util.Disposer
@@ -35,7 +36,7 @@ fun getDiffDirectory(): File {
     return diffDir
 }
 fun escapeFilepath(filepath: String): String {
-    return filepath.replace("/", "\$f\$").replace("\\", "\$b\$")
+    return filepath.replace("/", "_f_").replace("\\", "_b_")
 }
 
 interface DiffInfo {
@@ -46,7 +47,7 @@ interface DiffInfo {
     var dialog: DialogWrapper?
 }
 
-class DiffManager(private val project: Project) {
+class DiffManager(private val project: Project): DumbAware {
 
     private val diffContentFactory = DiffContentFactory.getInstance()
 
@@ -174,7 +175,7 @@ class DiffManager(private val project: Project) {
                             override fun createActions(): Array<Action> {
                                 val okAction = getOKAction()
                                 val cmdCtrl = if (System.getProperty("os.name").toLowerCase().contains("mac")) "⌘" else "⌃"
-                                okAction.putValue(Action.NAME, "Accept ($cmdCtrl ⇧ ↵)")
+                                okAction.putValue(Action.NAME, "Accept ($cmdCtrl ⇧ ⏎)")
 
                                 val cancelAction = getCancelAction()
                                 cancelAction.putValue(Action.NAME, "Reject ($cmdCtrl ⇧ ⌫)")

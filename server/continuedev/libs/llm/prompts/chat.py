@@ -21,6 +21,31 @@ def anthropic_template_messages(messages: List[Dict[str, str]]) -> str:
     return prompt
 
 
+def zephyr_template_messages(msgs: List[Dict[str, str]]) -> str:
+    """ "
+    <|system|>
+    </s>
+    <|user|>
+    {prompt}</s>
+    <|assistant|>
+    """
+    prompt = ""
+
+    if msgs[0]["role"] == "system":
+        prompt += f"<|system|>{msgs[0]['content']}</s>\n"
+        msgs.pop(0)
+    else:
+        prompt += "<|system|> </s>\n"
+
+    for msg in msgs:
+        prompt += "<|user|>\n" if msg["role"] == "user" else "<|assistant|>\n"
+        prompt += f"{msg['content']}</s>\n"
+
+    prompt += "<|assistant|>\n"
+
+    return prompt
+
+
 def chatml_template_messages(messages: List[Dict[str, str]]) -> str:
     prompt = ""
 
@@ -35,12 +60,12 @@ def template_alpaca_messages(msgs: List[Dict[str, str]]) -> str:
     prompt = ""
 
     if msgs[0]["role"] == "system":
-        prompt += f"{msgs[0]['content']}\n"
+        prompt += f"{msgs[0]['content']}\n\n"
         msgs.pop(0)
 
     for msg in msgs:
         prompt += "### Instruction:\n" if msg["role"] == "user" else "### Response:\n"
-        prompt += f"{msg['content']}\n"
+        prompt += f"{msg['content']}\n\n"
 
     prompt += "### Response:\n"
 
@@ -132,7 +157,7 @@ Based on your instructions, here is the SQL query I have generated to answer the
 
 
 def sqlcoder_template_messages(schema: str = SQL_CODER_DEFAULT_SCHEMA):
-    if schema == "<MY_DATABASE_SCHEMA>" or schema == "":
+    if schema in {"<MY_DATABASE_SCHEMA>", ""}:
         schema = SQL_CODER_DEFAULT_SCHEMA
 
     def fn(msgs):

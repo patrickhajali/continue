@@ -6,6 +6,7 @@ import { extensionContext, ideProtocolClient } from "./activation/activate";
 import { getMetaKeyLabel, getPlatform } from "./util/util";
 import { devDataPath } from "./activation/environmentSetup";
 import { uriFromFilePath } from "./util/vscode";
+import { debugPanelWebview } from "./debugPanel";
 
 interface DiffInfo {
   originalFilepath: string;
@@ -62,7 +63,7 @@ class DiffManager {
   }
 
   private escapeFilepath(filepath: string): string {
-    return filepath.replace(/\//g, "$f$").replace(/\\/g, "$b$");
+    return filepath.replace(/\//g, "_f_").replace(/\\/g, "_b_");
   }
 
   private remoteTmpDir: string = "/tmp/continue";
@@ -297,7 +298,7 @@ class DiffManager {
     }
 
     // Stop the step at step_index in case it is still streaming
-    ideProtocolClient.deleteAtIndex(diffInfo.step_index);
+    debugPanelWebview?.postMessage({ type: "stopSession" });
 
     vscode.workspace.textDocuments
       .find((doc) => doc.uri.fsPath === newFilepath)

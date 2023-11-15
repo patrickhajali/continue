@@ -20,7 +20,7 @@ DEFAULT_ARGS = {
     "temperature": 0.5,
 }
 
-MAX_TOKENS_FOR_MODEL = {
+CONTEXT_LENGTH_FOR_MODEL = {
     "gpt-3.5-turbo": 4096,
     "gpt-3.5-turbo-0613": 4096,
     "gpt-3.5-turbo-16k": 16_384,
@@ -29,6 +29,7 @@ MAX_TOKENS_FOR_MODEL = {
     "gpt-35-turbo-0613": 4096,
     "gpt-35-turbo": 4096,
     "gpt-4-32k": 32_768,
+    "gpt-4-1106-preview": 128_000,
 }
 
 already_saw_import_err = False
@@ -79,10 +80,7 @@ def count_chat_message_tokens(model_name: str, chat_message: ChatMessage) -> int
     return count_tokens(chat_message.content, model_name) + TOKENS_PER_MESSAGE
 
 
-def prune_raw_prompt_from_top(
-    model_name: str, context_length: int, prompt: str, tokens_for_completion: int
-):
-    max_tokens = context_length - tokens_for_completion - TOKEN_BUFFER_FOR_SAFETY
+def prune_string_from_top(model_name: str, max_tokens: int, prompt: str):
     encoding = encoding_for_model(model_name)
 
     if encoding is None:
@@ -92,8 +90,29 @@ def prune_raw_prompt_from_top(
     tokens = encoding.encode(prompt, disallowed_special=())
     if len(tokens) <= max_tokens:
         return prompt
-    else:
-        return encoding.decode(tokens[-max_tokens:])
+
+    return encoding.decode(tokens[-max_tokens:])
+
+
+def prune_string_from_bottom(model_name: str, max_tokens: int, prompt: str):
+    encoding = encoding_for_model(model_name)
+
+    if encoding is None:
+        desired_length_in_chars = max_tokens * 2
+        return prompt[:desired_length_in_chars]
+
+    tokens = encoding.encode(prompt, disallowed_special=())
+    if len(tokens) <= max_tokens:
+        return prompt
+
+    return encoding.decode(tokens[:max_tokens])
+
+
+def prune_raw_prompt_from_top(
+    model_name: str, context_length: int, prompt: str, tokens_for_completion: int
+):
+    max_tokens = context_length - tokens_for_completion - TOKEN_BUFFER_FOR_SAFETY
+    return prune_string_from_top(model_name, max_tokens, prompt)
 
 
 def prune_chat_history(
@@ -119,7 +138,7 @@ def prune_chat_history(
         count_tokens(message.content, model_name) - context_length / 3
         for message in longer_than_one_third
     ]
-    total_tokens_removed = 0
+
     for i in range(len(longer_than_one_third)):
         # Prune line-by-line
         message = longer_than_one_third[i]
@@ -127,11 +146,12 @@ def prune_chat_history(
         tokens_removed = 0
         while (
             tokens_removed < distance_from_third[i]
-            and total_tokens - total_tokens_removed > context_length
+            and total_tokens > context_length
+            and len(lines) > 0
         ):
-            delta = count_tokens(lines.pop(-1), model_name)
+            delta = count_tokens("\n" + lines.pop(-1), model_name)
             tokens_removed += delta
-            total_tokens_removed += delta
+            total_tokens -= delta
 
         message.content = "\n".join(lines)
 

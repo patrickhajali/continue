@@ -148,3 +148,6 @@ codeql
 **/**/.idea
 **/**/.qodana
 **/**/build
+
+continue_server.build
+continue_server.dist

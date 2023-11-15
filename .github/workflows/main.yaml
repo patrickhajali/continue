@@ -7,7 +7,7 @@ on:
 
 jobs:
   pypi-deployment:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -64,19 +64,19 @@ jobs:
             platform: win32
             arch: arm64
             npm_config_arch: arm
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
             platform: linux
             arch: x64
             npm_config_arch: x64
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
             platform: linux
             arch: arm64
             npm_config_arch: arm64
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
             platform: linux
             arch: armhf
             npm_config_arch: arm
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
             platform: alpine
             arch: x64
             npm_config_arch: x64
@@ -97,7 +97,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10.8"
+          python-version: "3.11"
 
       - name: Install Pyinstaller
         run: |
@@ -143,7 +143,7 @@ jobs:
           path: extensions/vscode/exe/continue_server
 
       - uses: actions/upload-artifact@v2
-        if: matrix.os == 'ubuntu-20.04' && matrix.arch == 'x64' && matrix.platform == 'linux'
+        if: matrix.os == 'ubuntu-latest' && matrix.arch == 'x64' && matrix.platform == 'linux'
         with:
           name: LinuxBinary
           path: extensions/vscode/exe/continue_server
@@ -200,13 +200,13 @@ jobs:
           export DISPLAY=:99 # Export the display number to the environment
           cd extensions/vscode
           npm run test
-        if: matrix.os == 'ubuntu-20.04'
+        if: matrix.os == 'ubuntu-latest'
 
       - name: Run extension tests
         run: |
           cd extensions/vscode
           npm run test
-        if: matrix.os != 'ubuntu-20.04'
+        if: matrix.os != 'ubuntu-latest'
 
       # 3.5 If on Apple Silicon, download the binary from S3 bucket
       - name: Remove existing binary
@@ -215,7 +215,7 @@ jobs:
 
       - name: Download Apple Silicon Binary
         if: matrix.os == 'macos-latest' && matrix.arch == 'arm64'
-        run: curl -o extensions/vscode/exe/continue_server https://continue-server-binaries.s3.us-west-1.amazonaws.com/apple-silicon/continue_server
+        run: curl -o extensions/vscode/exe/continue_server https://continue-server-binaries.s3.us-west-1.amazonaws.com/apple-silicon-preview/continue_server
 
       - name: Set permissions
         run: |
@@ -241,7 +241,7 @@ jobs:
         if: always()
 
   publish:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs: build
     permissions:
       contents: write
@@ -275,6 +275,19 @@ jobs:
           cd extensions/vscode
           npx ovsx publish -p ${{ secrets.VSX_REGISTRY_TOKEN }} --packagePath ../../alpine-x64/*.vsix ../../darwin-arm64/*.vsix ../../darwin-x64/*.vsix ../../linux-arm64/*.vsix ../../linux-armhf/*.vsix ../../linux-x64/*.vsix ../../win32-ia32/*.vsix ../../win32-x64/*.vsix ../../win32-arm64/*.vsix
 
+      # 3.5 Update the changelog
+      - name: Batch a new patch version
+        uses: miniscruff/changie-action@v2
+        with:
+          version: latest
+          args: batch patch
+
+      - name: Merge changelog
+        uses: miniscruff/changie-action@v2
+        with:
+          version: latest
+          args: merge
+
       # 4. Update the package.json version and push changes
       - name: Update version in package.json
         run: |
@@ -285,13 +298,21 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git commit -am "ci: 💚 Update package.json version [skip ci]"
+          git commit -am "💚 Update package.json version [skip ci]"
 
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
+
+      # 4.5 Send to Discord Webhook
+      - name: Discord Commits
+        uses: Sniddl/discord-commits@v1.6
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK }}
+          template: "avatar-with-link"
+          include-extras: true
 
       # 5. Download binaries and upload to S3
       - name: Download Linux build

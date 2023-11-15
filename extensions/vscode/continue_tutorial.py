@@ -1,6 +1,12 @@
 """
 Welcome to Continue!
 
+_________               _____ _____                       
+__  ____/______ _______ __  /____(_)_______ ____  _______ 
+_  /     _  __ \__  __ \_  __/__  / __  __ \_  / / /_  _ \
+/ /___   / /_/ /_  / / // /_  _  /  _  / / // /_/ / /  __/
+\____/   \____/ /_/ /_/ \__/  /_/   /_/ /_/ \__,_/  \___/ 
+
 This is a 2 minute tutorial.
 
 It will walk you through the basic features:
@@ -58,7 +64,7 @@ select the code and toggle the /edit slash command"""
 """Step 3: Request an edit and press Enter"""
 
 """Step 4: Use keyboard shortcuts to
-accept [⌘ ⇧ ↵] or reject [⌘ ⇧ ⌫] the edit"""
+accept [⌘ ⇧ ⏎] or reject [⌘ ⇧ ⌫] the edit"""
 
 # endregion
 

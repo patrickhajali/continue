@@ -8,6 +8,7 @@ from ..constants.main import (
     CONTINUE_SERVER_FOLDER,
     CONTINUE_SESSIONS_FOLDER,
 )
+from contextlib import asynccontextmanager
 
 
 def find_data_file(filename):
@@ -19,6 +20,34 @@ def getGlobalFolderPath():
     path = os.path.join(os.path.expanduser("~"), CONTINUE_GLOBAL_FOLDER)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def getMigrationsPath():
+    path = os.path.join(getGlobalFolderPath(), ".migrations")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def hasMigrated(migration_id: str) -> bool:
+    path = os.path.join(getMigrationsPath(), migration_id)
+    return os.path.exists(path)
+
+
+def markMigrated(migration_id: str):
+    path = os.path.join(getMigrationsPath(), migration_id)
+    with open(path, "w") as f:
+        f.write("")
+
+
+@asynccontextmanager
+async def migration(migration_id: str):
+    has_migrated = hasMigrated(migration_id)
+    if has_migrated:
+        return
+    try:
+        yield
+    finally:
+        markMigrated(migration_id)
 
 
 def getSessionsFolderPath():
@@ -55,14 +84,14 @@ def decode_escaped_path(path: str) -> str:
     """We use a custom escaping scheme to record the full path of a file as a
     corresponding basename, but withut URL encoding, because then the URI just gets
     interpreted as a full path again."""
-    return path.replace("$f$", "/").replace("$b$", "\\")
+    return path.replace("_f_", "/").replace("_b_", "\\")
 
 
 def encode_escaped_path(path: str) -> str:
     """We use a custom escaping scheme to record the full path of a file as a
     corresponding basename, but withut URL encoding, because then the URI just gets
     interpreted as a full path again."""
-    return path.replace("/", "$f$").replace("\\", "$b$")
+    return path.replace("/", "_f_").replace("\\", "_b_")
 
 
 def getEmbeddingsPathForBranch(workspace_dir: str, branch_name: str):
@@ -114,6 +143,8 @@ def migrateConfigFile(existing: str) -> Optional[str]:
         .replace("medium=", "summarize=")
         .replace("TextGenUI", "TextGenWebUI")
         .replace("text_gen_interface", "text_gen_webui")
+        .replace(".steps.chroma", ".steps.codebase")
+        .replace("\xa0", " ")
     )
     if migrated != existing:
         return migrated
