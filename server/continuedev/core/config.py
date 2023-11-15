@@ -55,7 +55,7 @@ class RetrievalSettings(BaseModel):
         50, description="Number of results to initially retrieve from vector database"
     )
     n_final: Optional[int] = Field(
-        10, description="Final number of results to use after re-ranking"
+        5, description="Final number of results to use after re-ranking"
     )
     use_reranking: bool = Field(
         True,

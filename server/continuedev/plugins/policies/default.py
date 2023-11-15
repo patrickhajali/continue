@@ -15,6 +15,9 @@ from ..steps.main import EditHighlightedCodeStep
 from ..steps.steps_on_startup import StepsOnStartupStep
 from ..steps.cmd import GenerateShellCommandStep
 
+# PAH
+from ..steps.multistep import PlanStep, VanillaMultiStepStep
+
 
 # When importing with importlib from config.py, the classes do not pass isinstance checks.
 # Mapping them here is a workaround.
@@ -119,5 +122,10 @@ class DefaultPolicy(Policy):
                         position=Position(line=int(args[2]), character=int(args[3])),
                     ),
                 )
+            
+            # PAH 
+            if user_input.startswith("/multi"):
+                return VanillaMultiStepStep(user_input=user_input[len("/multi ") :])
+
 
             return self.default_step(**self.default_params)

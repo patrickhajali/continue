@@ -55,6 +55,100 @@ async def get_faster_model(sdk: ContinueSDK) -> Optional[LLM]:
     # Return None, so re-ranking probably shouldn't happen
     return None
 
+class RetrieveCodebaseContext(Step): 
+    user_input: str
+    name : str = "Retrieve Code from Codebase"
+
+    hide: bool = False
+
+    async def run(self, sdk: ContinueSDK): 
+    
+        settings = sdk.config.retrieval_settings
+        faster_model = await get_faster_model(sdk)
+        use_reranking = settings.use_reranking and faster_model is not None
+
+        chroma_index = ChromaCodebaseIndex(
+            sdk.ide.workspace_directory, openai_api_key=settings.openai_api_key
+        )
+        meilisearch_index = MeilisearchCodebaseIndex(sdk.ide.workspace_directory)
+
+        yield SetStep(hide=False, description="Scanning codebase...")
+
+        # Get top chunks from index
+        to_retrieve_from_each = (
+            settings.n_retrieve if use_reranking else settings.n_final
+        ) // 2
+
+        # Use HyDE only if a faster model is available
+        query = self.user_input
+        keywords = None
+        if faster_model is not None:
+            resps = await asyncio.gather(
+                *[
+                    code_hyde(self.user_input, "", faster_model),
+                    generate_keywords(self.user_input, faster_model),
+                ]
+            )
+            query = resps[0]
+            keywords = resps[1]
+
+        # Get meilisearch chunks first, fill in the rest with chroma
+        if keywords is None:
+            meilisearch_chunks = await meilisearch_index.query(
+                self.user_input, n=to_retrieve_from_each
+            )
+        else:
+            meilisearch_chunks = await meilisearch_index.query_keywords(
+                keywords, n=to_retrieve_from_each
+            )
+        chroma_chunks = await chroma_index.query(
+            query, n=2 * to_retrieve_from_each - len(meilisearch_chunks)
+        )
+
+        chunk_ids = set()
+        chunks = []
+        for chunk in chroma_chunks + meilisearch_chunks:
+            if chunk.id not in chunk_ids:
+                chunk_ids.add(chunk.id)
+                chunks.append(chunk)
+
+        # Rerank to select top results
+        yield SetStep(description=f"Selecting top {settings.n_final} chunks of code...")
+
+        if use_reranking:
+            chunks = await single_token_reranker_parallel(
+                chunks,
+                self.user_input,
+                settings.n_final,
+                faster_model,
+                # group_size=settings.rerank_group_size,
+            )
+
+        # Add context items
+        context_items: List[ContextItem] = []
+        i = 0
+        for chunk in chunks:
+            # Can we select the context item through the normal means so that the name is disambiguated?
+            # Also so you don't have to understand the internals of the context provider
+            # OR have a chunk context provider??? Nice short-term, but I don't like it for long-term
+            ctx_item = ContextItem(
+                content=chunk.content,
+                description=ContextItemDescription(
+                    name=f"{os.path.basename(chunk.document_id)} ({chunk.start_line}-{chunk.end_line})",
+                    description=chunk.document_id,
+                    id=ContextItemId(
+                        provider_title="file",
+                        item_id=remove_meilisearch_disallowed_chars(chunk.document_id),
+                    ),
+                ),
+            )  # Should be 'code' not file! And eventually should be able to embed all context providers automatically!
+
+            context_items.append(ctx_item)
+            await sdk.add_context_item(ctx_item)
+            if i < 8:
+                await asyncio.sleep(0.06)
+            i += 1
+
 
 class AnswerQuestionChroma(Step):
     user_input: str
@@ -120,7 +214,7 @@ class AnswerQuestionChroma(Step):
                 chunks.append(chunk)
 
         # Rerank to select top results
-        yield SetStep(description="Selecting most important files...")
+        yield SetStep(description=f"Selecting top {settings.n_final} chunks of code...")
 
         if use_reranking:
             chunks = await single_token_reranker_parallel(
