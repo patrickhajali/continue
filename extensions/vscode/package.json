@@ -172,7 +172,13 @@
         "mac": "cmd+k cmd+m",
         "key": "ctrl+k ctrl+m",
         "when": "!terminalFocus"
-      }
+      }, 
+      {
+        "command": "continue.toggleInlineBox", 
+        "mac": "cmd+l", 
+        "key": "ctrl_l" 
+      } 
+      
     ],
     "submenus": [
       {
@@ -347,5 +353,6 @@
   },
   "optionalDependencies": {
     "@esbuild/android-arm": "^0.18.17"
-  }
+  },
+  "enabledApiProposals": ["editorInsets"]
 }

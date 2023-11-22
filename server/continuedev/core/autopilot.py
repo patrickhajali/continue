@@ -97,6 +97,7 @@ class Autopilot:
     class Config:
         arbitrary_types_allowed = True
 
+    
     def handle_error(self, e: Exception, step: Step) -> ContinueCustomException:
         is_continue_custom_exception = (
             issubclass(e.__class__, ContinueCustomException)

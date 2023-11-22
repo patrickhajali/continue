@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import InletApp from "./InletApp"; 
 import { Provider } from "react-redux";
 import { store, persistor } from "./redux/store";
 import "./index.css";
@@ -13,9 +14,10 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <Provider store={store}>
       <PersistGate loading={null} persistor={persistor}>
         <CustomPostHogProvider>
-          <App />
+          <InletApp />
         </CustomPostHogProvider>
       </PersistGate>
     </Provider>
   </React.StrictMode>
 );
+

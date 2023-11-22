@@ -5,13 +5,45 @@ import * as fs from "fs";
 
 import { acceptDiffCommand, rejectDiffCommand } from "./diffs";
 import { debugPanelWebview, getSidebarContent } from "./debugPanel";
+import { getPanelContent, insetPanelWebview } from "./insetPanel";
 import { ideProtocolClient } from "./activation/activate";
+import { getExtensionUri } from "./util/vscode";
 
-function addHighlightedCodeToContext(edit: boolean) {
+
+// PAH: toggleInlineBox (async)
+
+async function openInlineBox() {
+
+  let extensionUri = getExtensionUri();
+  const editor = vscode.window.activeTextEditor; 
+  const boxHeight = 5; // TODO: dynamic increase/decrease size
+
+  if (editor) {
+    const position =  editor.selection.active;
+    const cursorLine = position.line;
+    const inset = vscode.window.createWebviewTextEditorInset(editor, cursorLine, boxHeight);
+
+    inset.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(extensionUri, "gui")],
+      enableCommandUris: true,
+    };
+
+    inset.webview.html = getPanelContent(inset); 
+
+    return inset
+  }
+
+
+} 
+
+function addHighlightedCodeToContext(edit: boolean, panelWebview : vscode.Webview | undefined) {
   const editor = vscode.window.activeTextEditor;
   if (editor) {
     const selection = editor.selection;
-    if (selection.isEmpty) return;
+    if (selection.isEmpty) {
+      return;
+    } 
     const range = new vscode.Range(selection.start, selection.end);
     const contents = editor.document.getText(range);
     const rangeInFileWithContents = {
@@ -29,7 +61,7 @@ function addHighlightedCodeToContext(edit: boolean) {
       },
     };
 
-    debugPanelWebview?.postMessage({
+    panelWebview?.postMessage({
       type: "highlightedCode",
       rangeInFileWithContents,
       edit,
@@ -93,11 +125,11 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
     debugPanelWebview?.postMessage({
       type: "focusContinueInput",
     });
-    addHighlightedCodeToContext(false);
+    addHighlightedCodeToContext(false, debugPanelWebview);
   },
   "continue.focusContinueInputWithEdit": async () => {
     vscode.commands.executeCommand("continue.continueGUIView.focus");
-    addHighlightedCodeToContext(true);
+    addHighlightedCodeToContext(true, debugPanelWebview);
     debugPanelWebview?.postMessage({
       type: "focusContinueInputWithEdit",
     });
@@ -106,7 +138,7 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
     vscode.commands.executeCommand("workbench.action.toggleAuxiliaryBar");
   },
   "continue.quickTextEntry": async () => {
-    addHighlightedCodeToContext(true);
+    addHighlightedCodeToContext(true, debugPanelWebview);
     const text = await vscode.window.showInputBox({
       placeHolder: "Ask a question or enter a slash command",
       title: "Continue Quick Input",
@@ -252,6 +284,21 @@ const commandsMap: { [command: string]: (...args: any) => any } = {
       `/references ${filepath.fsPath} ${position.line} ${position.character}`
     );
   },
+  "continue.toggleInlineBox": () => {
+
+    openInlineBox()
+
+    addHighlightedCodeToContext(true, insetPanelWebview)
+
+
+    // const panel = vscode.window.createWebviewPanel(
+    //   "continue.continueInsetPanel", // used internally
+    //   "Continue", // Title of panel displayed to user
+    //   vscode.ViewColumn.One // TODO 
+    // );
+
+
+  }
 };
 
 export function registerAllCommands(context: vscode.ExtensionContext) {

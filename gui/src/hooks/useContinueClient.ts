@@ -40,6 +40,7 @@ function useContinueGUIProtocol(useVscodeMessagePassing: boolean = true) {
     );
 
     newClient.onConnected(() => {
+      console.log("On Connected")
       setClient(newClient);
     });
 

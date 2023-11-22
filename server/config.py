@@ -11,3 +11,4 @@ from continuedev.core.config import ContinueConfig
 def modify_config(config: ContinueConfig) -> ContinueConfig:
     config.completion_options.temperature = 0.5
     return config
+
